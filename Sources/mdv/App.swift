@@ -6,7 +6,7 @@ import WebKit
 
 @main
 @MainActor
-final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     private var windows: [NSWindow] = []
     private var closedWindows: [NSWindow] = []
     private var settingsWindow: NSWindow?
@@ -14,6 +14,7 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var windowModels: [ObjectIdentifier: AppModel] = [:]
     private var suppressOpenPaths: Set<String> = []
     private let appDisplayName = "mdv"
+    private var recentMenu: NSMenu?
 
     static func main() {
         let app = NSApplication.shared
@@ -85,6 +86,12 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate {
             action: #selector(openDocument(_:)),
             keyEquivalent: "o"
         )
+        let recentMenu = NSMenu(title: "Open Recent")
+        recentMenu.delegate = self
+        recentMenu.autoenablesItems = false
+        let recentItem = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
+        recentItem.submenu = recentMenu
+        fileMenu.addItem(recentItem)
         fileMenu.addItem(
             withTitle: "New Window",
             action: #selector(newWindow(_:)),
@@ -127,6 +134,8 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         NSApplication.shared.mainMenu = mainMenu
         NSApplication.shared.windowsMenu = windowMenu
+
+        self.recentMenu = recentMenu
     }
 
     @objc
@@ -208,6 +217,7 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let existing = windowModels.first(where: { $0.value.documentURL == standardized }) {
             let window = windows.first { ObjectIdentifier($0) == existing.key }
             window?.makeKeyAndOrderFront(nil)
+            NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
             return
         }
 
@@ -217,6 +227,7 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate {
             targetModel.open(url: standardized)
             targetWindow.title = standardized.lastPathComponent
             targetWindow.representedURL = standardized
+            NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
             return
         }
 
@@ -225,6 +236,7 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let window = createWindow(model: model)
         window.title = standardized.lastPathComponent
         window.representedURL = standardized
+        NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
     }
 
     private func openPanel() {
@@ -243,6 +255,48 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.openURL(url)
             }
         }
+    }
+
+    @objc
+    private func openRecent(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        openURL(url)
+    }
+
+    @objc
+    private func clearRecent(_ sender: Any?) {
+        NSDocumentController.shared.clearRecentDocuments(nil)
+        updateRecentMenu()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu === recentMenu else { return }
+        updateRecentMenu()
+    }
+
+    private func updateRecentMenu() {
+        guard let menu = recentMenu else { return }
+        menu.removeAllItems()
+
+        let urls = NSDocumentController.shared.recentDocumentURLs
+        if urls.isEmpty {
+            let item = NSMenuItem(title: "No Recent Documents", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            return
+        }
+
+        for url in urls {
+            let item = NSMenuItem(title: url.lastPathComponent, action: #selector(openRecent(_:)), keyEquivalent: "")
+            item.representedObject = url
+            item.target = self
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+        let clearItem = NSMenuItem(title: "Clear Menu", action: #selector(clearRecent(_:)), keyEquivalent: "")
+        clearItem.target = self
+        menu.addItem(clearItem)
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
