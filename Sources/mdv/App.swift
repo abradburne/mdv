@@ -162,7 +162,7 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "0.1.0"
         let build = info?["CFBundleVersion"] as? String
-        let versionString = build == nil ? "Version \(version)" : "Version \(version) (\(build!))"
+        let versionString = build == nil ? version : "\(version) (\(build!))"
         let credits = NSAttributedString(string: "Super Simple Markdown Viewer\n© 2026 Alan Bradburne · alanb@hey.com")
 
         let options: [NSApplication.AboutPanelOptionKey: Any] = [
