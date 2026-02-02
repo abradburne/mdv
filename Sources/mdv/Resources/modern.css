@@ -44,6 +44,12 @@ p {
   font-size: 1.05rem;
 }
 
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
 a {
   color: var(--link);
   text-decoration: none;

@@ -43,6 +43,12 @@ p {
   font-size: 1.03rem;
 }
 
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
 a {
   color: var(--link);
   text-decoration: underline;
