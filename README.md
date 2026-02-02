@@ -2,6 +2,8 @@
 
 Super simple macOS Markdown viewer built with SwiftUI + WebKit. It renders Markdown with markdown-it in a lightweight window, supports live reload, and ships with a few built-in CSS themes.
 
+![mdv screenshot](README-screenshot.png)
+
 ## Features
 
 - Native macOS app (SwiftUI + AppKit windowing)

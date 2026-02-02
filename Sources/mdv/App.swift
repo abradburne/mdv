@@ -350,7 +350,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            MarkdownWebView(html: model.html, baseURL: model.baseURL)
+            MarkdownWebView(html: model.html, htmlFileURL: model.htmlFileURL, readAccessURL: model.baseURL)
 
             Divider()
 
@@ -442,7 +442,8 @@ final class LinkRoutingDelegate: NSObject, WKNavigationDelegate {
 
 struct MarkdownWebView: NSViewRepresentable {
     let html: String
-    let baseURL: URL?
+    let htmlFileURL: URL?
+    let readAccessURL: URL?
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -456,7 +457,12 @@ struct MarkdownWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
-        nsView.loadHTMLString(html, baseURL: baseURL)
+        if let htmlFileURL {
+            let accessURL = URL(fileURLWithPath: "/")
+            nsView.loadFileURL(htmlFileURL, allowingReadAccessTo: accessURL)
+        } else {
+            nsView.loadHTMLString(html, baseURL: readAccessURL)
+        }
     }
 
     func makeCoordinator() -> LinkRoutingDelegate {
@@ -472,6 +478,7 @@ struct MarkdownWebView: NSViewRepresentable {
 @MainActor
 final class AppModel: ObservableObject {
     @Published var html: String = AppModel.placeholderHTML
+    @Published var htmlFileURL: URL?
     @Published var statusText: String = "Open a Markdown file (.md)"
     @Published var liveReloadEnabled: Bool = true {
         didSet { refreshWatcher() }
@@ -488,6 +495,7 @@ final class AppModel: ObservableObject {
     private var watcher: FileWatcher?
     private let renderer = MarkdownRenderer()
     private static let presetKey = "markdownViewerPreset"
+    private var tempHTMLURL: URL?
 
     init() {
         if let raw = UserDefaults.standard.string(forKey: Self.presetKey),
@@ -529,10 +537,12 @@ final class AppModel: ObservableObject {
         do {
             let markdown = try String(contentsOf: url, encoding: .utf8)
             let css = loadCss()
-            self.html = renderer.render(markdown: markdown, css: css)
+            self.html = renderer.render(markdown: markdown, css: css, baseURL: baseURL)
+            self.htmlFileURL = writeHTMLToTemp(self.html)
             self.statusText = url.lastPathComponent
         } catch {
-            html = renderer.wrap(body: "<p>Failed to load markdown.</p>", css: loadCss())
+            html = renderer.wrap(body: "<p>Failed to load markdown.</p>", css: loadCss(), baseURL: baseURL)
+            htmlFileURL = nil
             statusText = "Error: \(error.localizedDescription)"
         }
     }
@@ -553,6 +563,27 @@ final class AppModel: ObservableObject {
     private static let fallbackCss = """
     body { font-family: Georgia, serif; padding: 32px; }
     """
+
+    private func writeHTMLToTemp(_ html: String) -> URL? {
+        do {
+            let fileURL = try tempHTMLFileURL()
+            try html.write(to: fileURL, atomically: true, encoding: .utf8)
+            return fileURL
+        } catch {
+            return nil
+        }
+    }
+
+    private func tempHTMLFileURL() throws -> URL {
+        if let tempHTMLURL {
+            return tempHTMLURL
+        }
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mdv", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let fileURL = base.appendingPathComponent(UUID().uuidString).appendingPathExtension("html")
+        tempHTMLURL = fileURL
+        return fileURL
+    }
 
     var hasDocument: Bool {
         documentURL != nil

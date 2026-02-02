@@ -9,7 +9,7 @@ struct MarkdownRenderer {
         markdownItAnchor = MarkdownRenderer.loadResource(named: "markdown-it-anchor.min", ext: "js")
     }
 
-    func render(markdown: String, css: String) -> String {
+    func render(markdown: String, css: String, baseURL: URL?) -> String {
         let encoded = Data(markdown.utf8).base64EncodedString()
         let script = """
         \(markdownIt)
@@ -29,16 +29,21 @@ struct MarkdownRenderer {
         var mdSrc = new TextDecoder("utf-8").decode(bytes);
         document.getElementById("mdv-content").innerHTML = md.render(mdSrc);
         """
-        return wrap(body: "<div id=\"mdv-content\"></div><script>\(script)</script>", css: css)
+        return wrap(body: "<div id=\"mdv-content\"></div><script>\(script)</script>", css: css, baseURL: baseURL)
     }
 
-    func wrap(body: String, css: String) -> String {
-        """
+    func wrap(body: String, css: String, baseURL: URL?) -> String {
+        let baseTag = baseURL.map { url in
+            let dirURL = url.hasDirectoryPath ? url : url.deletingLastPathComponent()
+            return "<base href=\"\(dirURL.absoluteString)\">"
+        } ?? ""
+        return """
         <!doctype html>
         <html>
           <head>
             <meta charset=\"utf-8\" />
             <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+            \(baseTag)
             <style>\(css)</style>
           </head>
           <body>
