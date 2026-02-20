@@ -28,7 +28,11 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
         buildMainMenu()
         let args = CommandLine.arguments.dropFirst()
         if args.isEmpty {
-            _ = createWindow(model: AppModel())
+            DispatchQueue.main.async {
+                if self.windows.isEmpty {
+                    _ = self.createWindow(model: AppModel())
+                }
+            }
         } else {
             suppressOpenPaths = Set(args.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
             for path in args {
@@ -599,10 +603,10 @@ final class SettingsModel: ObservableObject {
         let home = fileManager.homeDirectoryForCurrentUser
         let localBin = URL(fileURLWithPath: "/usr/local/bin", isDirectory: true)
         let userBin = home.appendingPathComponent("bin", isDirectory: true)
-        let execPath = resolvedExecutablePath()
+        let appBundlePath = Bundle.main.bundleURL.path
         let script = """
         #!/bin/sh
-        exec "\(execPath)" "$@"
+        exec open -a "\(appBundlePath)" "$@"
         """
 
         do {
