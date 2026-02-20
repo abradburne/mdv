@@ -110,6 +110,17 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)
 
+        let viewMenuItem = NSMenuItem()
+        let viewMenu = NSMenu(title: "View")
+        let zoomInItem = NSMenuItem(title: "Zoom In", action: #selector(zoomIn(_:)), keyEquivalent: "+")
+        viewMenu.addItem(zoomInItem)
+        let zoomOutItem = NSMenuItem(title: "Zoom Out", action: #selector(zoomOut(_:)), keyEquivalent: "-")
+        viewMenu.addItem(zoomOutItem)
+        let zoomResetItem = NSMenuItem(title: "Actual Size", action: #selector(zoomReset(_:)), keyEquivalent: "0")
+        viewMenu.addItem(zoomResetItem)
+        viewMenuItem.submenu = viewMenu
+        mainMenu.addItem(viewMenuItem)
+
         let windowMenuItem = NSMenuItem()
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(
@@ -175,6 +186,30 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
             .credits: credits
         ]
         NSApplication.shared.orderFrontStandardAboutPanel(options: options)
+    }
+
+    private func keyWindowWebView() -> WKWebView? {
+        findWebView(in: NSApplication.shared.keyWindow?.contentView)
+    }
+
+    @objc
+    @MainActor
+    private func zoomIn(_ sender: Any?) {
+        guard let wv = keyWindowWebView() else { return }
+        wv.pageZoom = min(wv.pageZoom + 0.1, 3.0)
+    }
+
+    @objc
+    @MainActor
+    private func zoomOut(_ sender: Any?) {
+        guard let wv = keyWindowWebView() else { return }
+        wv.pageZoom = max(wv.pageZoom - 0.1, 0.5)
+    }
+
+    @objc
+    @MainActor
+    private func zoomReset(_ sender: Any?) {
+        keyWindowWebView()?.pageZoom = 1.0
     }
 
     @MainActor
