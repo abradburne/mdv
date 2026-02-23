@@ -73,6 +73,17 @@ mdv README.md
 swift test
 ```
 
+## Releasing
+
+Bump the version everywhere in one step:
+
+```sh
+sh scripts/bump_version.sh 0.2.0
+git add -A && git commit -m "Bump version to 0.2.0" && git tag v0.2.0
+git push && git push --tags
+sh scripts/release.sh   # builds, signs, notarizes → mdv.dmg
+```
+
 ## Notes
 
 - External links open in your default browser.

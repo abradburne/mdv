@@ -15,6 +15,8 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
     private var suppressOpenPaths: Set<String> = []
     private let appDisplayName = "mdv"
     private var recentMenu: NSMenu?
+    private let githubRepo = "abradburne/mdv"
+    private let appVersion = "0.2.0"
 
     static func main() {
         let app = NSApplication.shared
@@ -41,6 +43,7 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
         }
 
         NSApplication.shared.activate(ignoringOtherApps: true)
+        Task { await checkForUpdates() }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -56,6 +59,46 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    private func checkForUpdates() async {
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+
+        let url = URL(string: "https://api.github.com/repos/\(githubRepo)/releases/latest")!
+        var request = URLRequest(url: url)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tagName = json["tag_name"] as? String,
+              let releaseURL = json["html_url"] as? String else { return }
+
+        let latest = tagName.hasPrefix("v") ? String(tagName.dropFirst()) : tagName
+        let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? appVersion
+
+        guard versionIsNewer(latest, than: current) else { return }
+
+        await MainActor.run {
+            let alert = NSAlert()
+            alert.messageText = "Update Available"
+            alert.informativeText = "mdv \(latest) is available (you have \(current))."
+            alert.addButton(withTitle: "Download Update")
+            alert.addButton(withTitle: "Not Now")
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(URL(string: releaseURL)!)
+            }
+        }
+    }
+
+    private func versionIsNewer(_ latest: String, than current: String) -> Bool {
+        let parse: (String) -> [Int] = { $0.split(separator: ".").compactMap { Int($0) } }
+        let l = parse(latest), c = parse(current)
+        for i in 0..<max(l.count, c.count) {
+            let lv = i < l.count ? l[i] : 0
+            let cv = i < c.count ? c[i] : 0
+            if lv != cv { return lv > cv }
+        }
+        return false
     }
 
     @MainActor
@@ -175,14 +218,15 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
     @MainActor
     private func showAbout(_ sender: Any?) {
         let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+        let version = info?["CFBundleShortVersionString"] as? String ?? appVersion
         let build = info?["CFBundleVersion"] as? String
-        let versionString = build == nil ? version : "\(version) (\(build!))"
+        let versionString = build.map { b in b != version ? "\(version) (\(b))" : version } ?? version
         let credits = NSAttributedString(string: "Super Simple Markdown Viewer\n© 2026 Alan Bradburne · alanb@hey.com")
 
         let options: [NSApplication.AboutPanelOptionKey: Any] = [
             .applicationName: appDisplayName,
-            .version: versionString,
+            .applicationVersion: versionString,
+            .version: "",
             .credits: credits
         ]
         NSApplication.shared.orderFrontStandardAboutPanel(options: options)
