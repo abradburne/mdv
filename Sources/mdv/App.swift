@@ -491,16 +491,6 @@ struct ContentView: View {
             detailPane
         }
         .navigationSplitViewStyle(.balanced)
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button {
-                    model.isSidebarVisible.toggle()
-                } label: {
-                    Image(systemName: "sidebar.left")
-                }
-                .help(model.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
-            }
-        }
     }
 
     private var detailPane: some View {
