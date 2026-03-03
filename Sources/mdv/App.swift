@@ -247,6 +247,9 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
     @objc
     @MainActor
     private func toggleSidebar(_ sender: Any?) {
+        if NSApplication.shared.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: sender) {
+            return
+        }
         guard let keyWindow = NSApplication.shared.keyWindow,
               let model = windowModels[ObjectIdentifier(keyWindow)] else { return }
         model.isSidebarVisible.toggle()
@@ -295,18 +298,25 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
     private func createWindow(model: AppModel) -> NSWindow {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 720),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.center()
         window.title = appDisplayName
+        window.toolbar = NSToolbar(identifier: "mdv-toolbar")
+        window.toolbarStyle = .unified
+        window.titlebarAppearsTransparent = true
         window.contentView = NSHostingView(rootView: ContentView(model: model))
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(nil)
         window.delegate = self
         windows.append(window)
         windowModels[ObjectIdentifier(window)] = model
+        model.onDocumentOpened = { [weak window] url in
+            window?.title = url.lastPathComponent
+            window?.representedURL = url
+        }
         return window
     }
 
@@ -446,23 +456,62 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
+    @State private var isDropTargeted: Bool = false
 
     var body: some View {
-        if #available(macOS 13.0, *) {
-            modernSplitView
-        } else {
-            legacySplitView
+        Group {
+            if #available(macOS 13.0, *) {
+                modernSplitView
+            } else {
+                legacySplitView
+            }
+        }
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(.tint.opacity(0.65), lineWidth: 2)
+                    .padding(10)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted, perform: handleDrop(providers:))
+    }
+
+    @available(macOS 13.0, *)
+    private var modernSplitView: some View {
+        NavigationSplitView {
+            TOCSidebarView(model: model)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
+        } detail: {
+            detailPane
         }
     }
 
     private var legacySplitView: some View {
-        HStack(spacing: 0) {
-            if model.isSidebarVisible {
-                TOCSidebarView(model: model)
-                    .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
-                Divider()
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .windowBackgroundColor),
+                    Color(nsColor: .underPageBackgroundColor)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            Group {
+                if model.isSidebarVisible {
+                    HSplitView {
+                        TOCSidebarView(model: model)
+                            .frame(minWidth: 220, idealWidth: 260, maxWidth: 360)
+                            .padding(.leading, 12)
+                            .padding(.vertical, 12)
+                        detailPane
+                    }
+                } else {
+                    detailPane
+                }
             }
-            detailPane
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
@@ -476,30 +525,14 @@ struct ContentView: View {
         }
     }
 
-    @available(macOS 13.0, *)
-    private var modernSplitView: some View {
-        NavigationSplitView(
-            columnVisibility: Binding(
-                get: { model.isSidebarVisible ? .all : .detailOnly },
-                set: { visibility in
-                    model.isSidebarVisible = visibility != .detailOnly
-                }
-            )
-        ) {
-            TOCSidebarView(model: model)
-        } detail: {
-            detailPane
-        }
-        .navigationSplitViewStyle(.balanced)
-    }
-
     private var detailPane: some View {
         VStack(spacing: 0) {
             MarkdownWebView(
                 html: model.html,
                 htmlFileURL: model.htmlFileURL,
                 readAccessURL: model.baseURL,
-                tocScrollRequest: model.tocScrollRequest
+                tocScrollRequest: model.tocScrollRequest,
+                onFileDrop: openDropped(url:)
             )
 
             Divider()
@@ -527,9 +560,61 @@ struct ContentView: View {
                 .keyboardShortcut("r", modifiers: [.command])
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.regularMaterial)
+            .padding(.vertical, 10)
+            .glassSurface(cornerRadius: 14)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 10)
         }
+    }
+
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first(where: {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }) else {
+            return false
+        }
+
+        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+            if let data = item as? Data,
+               let url = NSURL(absoluteURLWithDataRepresentation: data, relativeTo: nil) as URL? {
+                Task { @MainActor in
+                    openDropped(url: url)
+                }
+                return
+            }
+            if let url = item as? URL {
+                Task { @MainActor in
+                    openDropped(url: url)
+                }
+                return
+            }
+            if let path = item as? String {
+                Task { @MainActor in
+                    openDropped(url: URL(fileURLWithPath: path))
+                }
+            }
+        }
+
+        return true
+    }
+
+    private func openDropped(url: URL) {
+        let standardized = url.standardizedFileURL
+        guard isMarkdownFile(url: standardized) else { return }
+
+        Task { @MainActor in
+            model.open(url: standardized)
+            if let window = NSApplication.shared.keyWindow ?? NSApplication.shared.mainWindow {
+                window.title = standardized.lastPathComponent
+                window.representedURL = standardized
+            }
+            NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
+        }
+    }
+
+    private func isMarkdownFile(url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        return ["md", "markdown", "mdown", "mkd", "mkdn"].contains(ext)
     }
 }
 
@@ -568,6 +653,36 @@ struct TOCSidebarView: View {
         .listStyle(.sidebar)
         .navigationTitle("Contents")
         .frame(minWidth: 220, idealWidth: 260)
+    }
+}
+
+private struct GlassSurfaceModifier: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.46),
+                                Color.white.opacity(0.16)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.8
+                    )
+            )
+            .shadow(color: .black.opacity(0.10), radius: 14, y: 6)
+    }
+}
+
+private extension View {
+    func glassSurface(cornerRadius: CGFloat) -> some View {
+        modifier(GlassSurfaceModifier(cornerRadius: cornerRadius))
     }
 }
 
@@ -674,19 +789,22 @@ struct MarkdownWebView: NSViewRepresentable {
     let htmlFileURL: URL?
     let readAccessURL: URL?
     let tocScrollRequest: TOCScrollRequest?
+    let onFileDrop: (URL) -> Void
 
-    func makeNSView(context: Context) -> WKWebView {
+    func makeNSView(context: Context) -> DropAwareWebView {
         let config = WKWebViewConfiguration()
-        let view = WKWebView(frame: .zero, configuration: config)
+        let view = DropAwareWebView(frame: .zero, configuration: config)
         view.setValue(false, forKey: "drawsBackground")
         view.navigationDelegate = context.coordinator
+        view.onFileDrop = onFileDrop
         if #available(macOS 13.3, *) {
             view.isInspectable = true
         }
         return view
     }
 
-    func updateNSView(_ nsView: WKWebView, context: Context) {
+    func updateNSView(_ nsView: DropAwareWebView, context: Context) {
+        nsView.onFileDrop = onFileDrop
         context.coordinator.loadIfNeeded(
             webView: nsView,
             html: html,
@@ -703,6 +821,58 @@ struct MarkdownWebView: NSViewRepresentable {
     static func dismantleNSView(_ nsView: WKWebView, coordinator: LinkRoutingDelegate) {
         nsView.navigationDelegate = nil
         nsView.stopLoading()
+    }
+}
+
+final class DropAwareWebView: WKWebView {
+    var onFileDrop: ((URL) -> Void)?
+    private static let legacyFilenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+
+    override init(frame: CGRect, configuration: WKWebViewConfiguration) {
+        super.init(frame: frame, configuration: configuration)
+        registerForDraggedTypes([.fileURL, .URL, Self.legacyFilenamesType, .string])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        firstFileURL(from: sender.draggingPasteboard) == nil ? [] : .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        firstFileURL(from: sender.draggingPasteboard) == nil ? [] : .copy
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        firstFileURL(from: sender.draggingPasteboard) != nil
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let url = firstFileURL(from: sender.draggingPasteboard) else { return false }
+        onFileDrop?(url)
+        return true
+    }
+
+    private func firstFileURL(from pasteboard: NSPasteboard) -> URL? {
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL],
+           let first = urls.first {
+            return first
+        }
+
+        if let names = pasteboard.propertyList(forType: Self.legacyFilenamesType) as? [String],
+           let first = names.first {
+            return URL(fileURLWithPath: first)
+        }
+
+        if let string = pasteboard.string(forType: .fileURL) ?? pasteboard.string(forType: .URL),
+           let url = URL(string: string), url.isFileURL {
+            return url
+        }
+
+        return nil
     }
 }
 
@@ -733,6 +903,7 @@ final class AppModel: ObservableObject {
     private static let presetKey = "markdownViewerPreset"
     private static let sidebarVisibleKey = "markdownViewerSidebarVisible"
     private var tempHTMLURL: URL?
+    var onDocumentOpened: ((URL) -> Void)?
 
     init() {
         if let raw = UserDefaults.standard.string(forKey: Self.presetKey),
@@ -752,6 +923,7 @@ final class AppModel: ObservableObject {
         baseURL = standardized.deletingLastPathComponent()
         load(url: standardized)
         refreshWatcher()
+        onDocumentOpened?(standardized)
     }
 
     func reload() {
@@ -877,7 +1049,100 @@ final class AppModel: ObservableObject {
 
     private static let placeholderHTML = """
     <!doctype html>
-    <html><body><article class=\"md\"><h1>Markdown Viewer</h1><p>Open a .md file to begin.</p></article></body></html>
+    <html>
+      <head>
+        <meta charset=\"utf-8\" />
+        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+        <style>
+          :root { color-scheme: light dark; }
+          html, body { height: 100%; margin: 0; }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Helvetica Neue\", sans-serif;
+            background:
+              radial-gradient(900px 500px at -10% -10%, rgba(109, 196, 255, 0.22), transparent 60%),
+              radial-gradient(800px 420px at 110% 120%, rgba(168, 144, 255, 0.18), transparent 55%),
+              linear-gradient(135deg, rgba(250, 250, 252, 0.95), rgba(240, 242, 246, 0.88));
+            color: rgba(28, 28, 30, 0.92);
+            display: grid;
+            place-items: center;
+            padding: 24px;
+            box-sizing: border-box;
+          }
+          .empty {
+            width: min(640px, calc(100vw - 48px));
+            border-radius: 20px;
+            padding: 28px 30px;
+            background: rgba(255, 255, 255, 0.60);
+            border: 1px solid rgba(255, 255, 255, 0.66);
+            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.12);
+            backdrop-filter: blur(12px);
+            box-sizing: border-box;
+          }
+          h1 {
+            margin: 0 0 10px;
+            font-size: clamp(32px, 5.1vw, 44px);
+            line-height: 1.08;
+            letter-spacing: -0.04em;
+            font-weight: 760;
+          }
+          p {
+            margin: 0;
+            font-size: 18px;
+            line-height: 1.55;
+            color: rgba(44, 44, 46, 0.80);
+          }
+          ul {
+            margin: 16px 0 0;
+            padding-left: 20px;
+            color: rgba(44, 44, 46, 0.78);
+            font-size: 15px;
+            line-height: 1.5;
+          }
+          code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+            font-size: 0.92em;
+            padding: 2px 6px;
+            border-radius: 6px;
+            background: rgba(0, 0, 0, 0.07);
+          }
+          @media (prefers-color-scheme: dark) {
+            body {
+              background:
+                radial-gradient(900px 500px at -10% -10%, rgba(106, 167, 255, 0.20), transparent 60%),
+                radial-gradient(800px 420px at 110% 120%, rgba(170, 140, 255, 0.18), transparent 55%),
+                linear-gradient(135deg, rgba(23, 23, 26, 0.95), rgba(31, 32, 37, 0.92));
+              color: rgba(245, 245, 247, 0.95);
+            }
+            .empty {
+              background: rgba(28, 28, 31, 0.58);
+              border-color: rgba(255, 255, 255, 0.18);
+              box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+            }
+            p, ul { color: rgba(235, 235, 240, 0.80); }
+            code { background: rgba(255, 255, 255, 0.12); }
+          }
+          @media (max-width: 720px) {
+            .empty {
+              padding: 22px 20px;
+              border-radius: 16px;
+            }
+            h1 { font-size: clamp(28px, 7.5vw, 38px); }
+            p { font-size: 16px; }
+            ul { font-size: 14px; }
+          }
+        </style>
+      </head>
+      <body>
+        <article class=\"empty\">
+          <h1>Markdown Viewer</h1>
+          <p>Drop a markdown file here, or press <code>Cmd+O</code> to open one.</p>
+          <ul>
+            <li>Use the sidebar button to browse headings.</li>
+            <li>Toggle live reload for instant updates while editing.</li>
+          </ul>
+        </article>
+      </body>
+    </html>
     """
 
     private static let fallbackCss = """
