@@ -155,6 +155,14 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
 
         let viewMenuItem = NSMenuItem()
         let viewMenu = NSMenu(title: "View")
+        let toggleSidebarItem = NSMenuItem(
+            title: "Toggle Sidebar",
+            action: #selector(toggleSidebar(_:)),
+            keyEquivalent: "s"
+        )
+        toggleSidebarItem.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(toggleSidebarItem)
+        viewMenu.addItem(.separator())
         let zoomInItem = NSMenuItem(title: "Zoom In", action: #selector(zoomIn(_:)), keyEquivalent: "+")
         viewMenu.addItem(zoomInItem)
         let zoomOutItem = NSMenuItem(title: "Zoom Out", action: #selector(zoomOut(_:)), keyEquivalent: "-")
@@ -234,6 +242,14 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
 
     private func keyWindowWebView() -> WKWebView? {
         findWebView(in: NSApplication.shared.keyWindow?.contentView)
+    }
+
+    @objc
+    @MainActor
+    private func toggleSidebar(_ sender: Any?) {
+        guard let keyWindow = NSApplication.shared.keyWindow,
+              let model = windowModels[ObjectIdentifier(keyWindow)] else { return }
+        model.isSidebarVisible.toggle()
     }
 
     @objc
@@ -432,37 +448,148 @@ struct ContentView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            MarkdownWebView(html: model.html, htmlFileURL: model.htmlFileURL, readAccessURL: model.baseURL)
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .windowBackgroundColor),
+                    Color(nsColor: .underPageBackgroundColor)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
 
-            Divider()
+            HStack(spacing: 0) {
+                if model.isSidebarVisible {
+                    TOCSidebarView(model: model)
+                        .padding(.leading, 12)
+                        .padding(.vertical, 12)
 
-            HStack(spacing: 16) {
-                Text(model.statusText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                    Divider()
+                        .padding(.vertical, 10)
+                }
 
-                Spacer()
+                VStack(spacing: 0) {
+                    MarkdownWebView(
+                        html: model.html,
+                        htmlFileURL: model.htmlFileURL,
+                        readAccessURL: model.baseURL,
+                        tocScrollRequest: model.tocScrollRequest
+                    )
 
-                Toggle("Live Reload", isOn: $model.liveReloadEnabled)
-                    .toggleStyle(.switch)
+                    HStack(spacing: 16) {
+                        Text(model.statusText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
 
-                Picker("Style", selection: $model.selectedPreset) {
-                    ForEach(CssPreset.allCases) { preset in
-                        Text(preset.title).tag(preset)
+                        Spacer()
+
+                        Toggle("Live Reload", isOn: $model.liveReloadEnabled)
+                            .toggleStyle(.switch)
+
+                        Picker("Style", selection: $model.selectedPreset) {
+                            ForEach(CssPreset.allCases) { preset in
+                                Text(preset.title).tag(preset)
+                            }
+                        }
+                        .pickerStyle(.menu)
+
+                        Button("Reload") {
+                            model.reload()
+                        }
+                        .keyboardShortcut("r", modifiers: [.command])
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .glassSurface(cornerRadius: 14)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 10)
+                }
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    model.isSidebarVisible.toggle()
+                } label: {
+                    Image(systemName: "sidebar.left")
+                }
+                .help(model.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+            }
+        }
+    }
+}
+
+struct TOCSidebarView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                if model.tableOfContents.isEmpty {
+                    Text("No headings found")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(model.tableOfContents) { section in
+                        Button {
+                            model.scrollToHeading(anchor: section.anchor)
+                        } label: {
+                            Text(section.title)
+                                .font(.headline)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+
+                        ForEach(section.children) { child in
+                            Button {
+                                model.scrollToHeading(anchor: child.anchor)
+                            } label: {
+                                Text(child.title)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.leading, 12)
+                        }
                     }
                 }
-                .pickerStyle(.menu)
-
-                Button("Reload") {
-                    model.reload()
-                }
-                .keyboardShortcut("r", modifiers: [.command])
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.regularMaterial)
+            .padding(.vertical, 14)
         }
+        .frame(minWidth: 220, idealWidth: 250, maxWidth: 320, maxHeight: .infinity)
+        .glassSurface(cornerRadius: 16)
+    }
+}
+
+private struct GlassSurfaceModifier: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.48),
+                                Color.white.opacity(0.18)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.8
+                    )
+            )
+            .shadow(color: .black.opacity(0.10), radius: 14, y: 6)
+    }
+}
+
+private extension View {
+    func glassSurface(cornerRadius: CGFloat) -> some View {
+        modifier(GlassSurfaceModifier(cornerRadius: cornerRadius))
     }
 }
 
@@ -496,6 +623,36 @@ struct SettingsView: View {
 
 @MainActor
 final class LinkRoutingDelegate: NSObject, WKNavigationDelegate {
+    private var pendingScrollAnchor: String?
+    private var lastScrollRequestID: UUID?
+    private var lastLoadedHTML: String?
+    private var lastLoadedFileURL: URL?
+
+    func loadIfNeeded(webView: WKWebView, html: String, htmlFileURL: URL?, readAccessURL: URL?) {
+        guard html != lastLoadedHTML || htmlFileURL != lastLoadedFileURL else { return }
+        lastLoadedHTML = html
+        lastLoadedFileURL = htmlFileURL
+
+        if let htmlFileURL {
+            let accessURL = URL(fileURLWithPath: "/")
+            webView.loadFileURL(htmlFileURL, allowingReadAccessTo: accessURL)
+        } else {
+            webView.loadHTMLString(html, baseURL: readAccessURL)
+        }
+    }
+
+    func handle(scrollRequest: TOCScrollRequest?, in webView: WKWebView) {
+        guard let scrollRequest, scrollRequest.id != lastScrollRequestID else { return }
+        lastScrollRequestID = scrollRequest.id
+        scrollToAnchor(scrollRequest.anchor, in: webView)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard let anchor = pendingScrollAnchor else { return }
+        pendingScrollAnchor = nil
+        scrollToAnchor(anchor, in: webView)
+    }
+
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else {
             decisionHandler(.allow)
@@ -507,8 +664,7 @@ final class LinkRoutingDelegate: NSObject, WKNavigationDelegate {
         if navigationAction.navigationType == .linkActivated,
            let fragment = url.fragment,
            (scheme.isEmpty || scheme == "file") {
-            let js = "var el = document.getElementById('\(fragment)'); if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }"
-            webView.evaluateJavaScript(js, completionHandler: nil)
+            scrollToAnchor(fragment, in: webView)
             decisionHandler(.cancel)
             return
         }
@@ -521,12 +677,25 @@ final class LinkRoutingDelegate: NSObject, WKNavigationDelegate {
 
         decisionHandler(.allow)
     }
+
+    private func scrollToAnchor(_ anchor: String, in webView: WKWebView) {
+        if webView.isLoading {
+            pendingScrollAnchor = anchor
+            return
+        }
+        let escaped = anchor
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+        let js = "var el = document.getElementById('\(escaped)'); if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }"
+        webView.evaluateJavaScript(js, completionHandler: nil)
+    }
 }
 
 struct MarkdownWebView: NSViewRepresentable {
     let html: String
     let htmlFileURL: URL?
     let readAccessURL: URL?
+    let tocScrollRequest: TOCScrollRequest?
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -540,12 +709,13 @@ struct MarkdownWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
-        if let htmlFileURL {
-            let accessURL = URL(fileURLWithPath: "/")
-            nsView.loadFileURL(htmlFileURL, allowingReadAccessTo: accessURL)
-        } else {
-            nsView.loadHTMLString(html, baseURL: readAccessURL)
-        }
+        context.coordinator.loadIfNeeded(
+            webView: nsView,
+            html: html,
+            htmlFileURL: htmlFileURL,
+            readAccessURL: readAccessURL
+        )
+        context.coordinator.handle(scrollRequest: tocScrollRequest, in: nsView)
     }
 
     func makeCoordinator() -> LinkRoutingDelegate {
@@ -572,12 +742,18 @@ final class AppModel: ObservableObject {
             reload()
         }
     }
+    @Published var isSidebarVisible: Bool = false {
+        didSet { UserDefaults.standard.set(isSidebarVisible, forKey: Self.sidebarVisibleKey) }
+    }
+    @Published var tableOfContents: [TOCSection] = []
+    @Published var tocScrollRequest: TOCScrollRequest?
 
     private(set) var baseURL: URL?
     var documentURL: URL?
     private var watcher: FileWatcher?
     private let renderer = MarkdownRenderer()
     private static let presetKey = "markdownViewerPreset"
+    private static let sidebarVisibleKey = "markdownViewerSidebarVisible"
     private var tempHTMLURL: URL?
 
     init() {
@@ -585,6 +761,7 @@ final class AppModel: ObservableObject {
            let preset = CssPreset(rawValue: raw) {
             selectedPreset = preset
         }
+        isSidebarVisible = UserDefaults.standard.bool(forKey: Self.sidebarVisibleKey)
     }
 
     func open(path: String) {
@@ -622,12 +799,94 @@ final class AppModel: ObservableObject {
             let css = loadCss()
             self.html = renderer.render(markdown: markdown, css: css, baseURL: baseURL)
             self.htmlFileURL = writeHTMLToTemp(self.html)
+            self.tableOfContents = Self.extractTableOfContents(from: markdown)
             self.statusText = url.lastPathComponent
         } catch {
             html = renderer.wrap(body: "<p>Failed to load markdown.</p>", css: loadCss(), baseURL: baseURL)
             htmlFileURL = nil
+            tableOfContents = []
             statusText = "Error: \(error.localizedDescription)"
         }
+    }
+
+    func scrollToHeading(anchor: String) {
+        tocScrollRequest = TOCScrollRequest(anchor: anchor)
+    }
+
+    static func extractTableOfContents(from markdown: String) -> [TOCSection] {
+        var sections: [TOCSection] = []
+        var slugCounts: [String: Int] = [:]
+        var inCodeFence = false
+
+        for rawLine in markdown.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+            let line = String(rawLine)
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                inCodeFence.toggle()
+                continue
+            }
+            if inCodeFence { continue }
+
+            guard let heading = parseHeading(from: line), [1, 2].contains(heading.level) else { continue }
+
+            let baseSlug = slugified(heading.title)
+            let anchor = uniqueSlug(for: baseSlug, counts: &slugCounts)
+            if heading.level == 1 {
+                sections.append(TOCSection(title: heading.title, anchor: anchor, children: []))
+            } else if !sections.isEmpty {
+                let child = TOCChild(title: heading.title, anchor: anchor)
+                sections[sections.count - 1].children.append(child)
+            }
+        }
+
+        return sections
+    }
+
+    private static func parseHeading(from line: String) -> (level: Int, title: String)? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("#") else { return nil }
+
+        var level = 0
+        for char in trimmed {
+            if char == "#" { level += 1 } else { break }
+        }
+        guard (1...6).contains(level) else { return nil }
+
+        let index = trimmed.index(trimmed.startIndex, offsetBy: level)
+        guard index < trimmed.endIndex, trimmed[index].isWhitespace else { return nil }
+
+        var title = trimmed[index...].trimmingCharacters(in: .whitespaces)
+        while title.hasSuffix("#") {
+            title.removeLast()
+            title = title.trimmingCharacters(in: .whitespaces)
+        }
+
+        guard !title.isEmpty else { return nil }
+        return (level, title)
+    }
+
+    private static func slugified(_ title: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let filtered = String(trimmed.map { char in
+            if char.isASCII, (char.isLetter || char.isNumber || char == "-" || char.isWhitespace) {
+                return char
+            }
+            return " "
+        })
+        let pieces = filtered
+            .split(whereSeparator: { $0.isWhitespace || $0 == "-" })
+            .map(String.init)
+        return pieces.isEmpty ? "section" : pieces.joined(separator: "-")
+    }
+
+    private static func uniqueSlug(for base: String, counts: inout [String: Int]) -> String {
+        if let count = counts[base] {
+            counts[base] = count + 1
+            return "\(base)-\(count)"
+        }
+        counts[base] = 1
+        return base
     }
 
     private func loadCss() -> String {
@@ -671,6 +930,24 @@ final class AppModel: ObservableObject {
     var hasDocument: Bool {
         documentURL != nil
     }
+}
+
+struct TOCSection: Identifiable, Equatable {
+    let id = UUID()
+    let title: String
+    let anchor: String
+    var children: [TOCChild]
+}
+
+struct TOCChild: Identifiable, Equatable {
+    let id = UUID()
+    let title: String
+    let anchor: String
+}
+
+struct TOCScrollRequest: Equatable {
+    let id = UUID()
+    let anchor: String
 }
 
 @MainActor
