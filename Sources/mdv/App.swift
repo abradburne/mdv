@@ -446,65 +446,63 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
+    @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color(nsColor: .windowBackgroundColor),
-                    Color(nsColor: .underPageBackgroundColor)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            TOCSidebarView(model: model)
+        } detail: {
+            VStack(spacing: 0) {
+                MarkdownWebView(
+                    html: model.html,
+                    htmlFileURL: model.htmlFileURL,
+                    readAccessURL: model.baseURL,
+                    tocScrollRequest: model.tocScrollRequest
+                )
 
-            HStack(spacing: 0) {
-                if model.isSidebarVisible {
-                    TOCSidebarView(model: model)
-                        .padding(.leading, 12)
-                        .padding(.vertical, 12)
+                Divider()
 
-                    Divider()
-                        .padding(.vertical, 10)
-                }
+                HStack(spacing: 16) {
+                    Text(model.statusText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
 
-                VStack(spacing: 0) {
-                    MarkdownWebView(
-                        html: model.html,
-                        htmlFileURL: model.htmlFileURL,
-                        readAccessURL: model.baseURL,
-                        tocScrollRequest: model.tocScrollRequest
-                    )
+                    Spacer()
 
-                    HStack(spacing: 16) {
-                        Text(model.statusText)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                    Toggle("Live Reload", isOn: $model.liveReloadEnabled)
+                        .toggleStyle(.switch)
 
-                        Spacer()
-
-                        Toggle("Live Reload", isOn: $model.liveReloadEnabled)
-                            .toggleStyle(.switch)
-
-                        Picker("Style", selection: $model.selectedPreset) {
-                            ForEach(CssPreset.allCases) { preset in
-                                Text(preset.title).tag(preset)
-                            }
+                    Picker("Style", selection: $model.selectedPreset) {
+                        ForEach(CssPreset.allCases) { preset in
+                            Text(preset.title).tag(preset)
                         }
-                        .pickerStyle(.menu)
-
-                        Button("Reload") {
-                            model.reload()
-                        }
-                        .keyboardShortcut("r", modifiers: [.command])
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .glassSurface(cornerRadius: 14)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 10)
+                    .pickerStyle(.menu)
+
+                    Button("Reload") {
+                        model.reload()
+                    }
+                    .keyboardShortcut("r", modifiers: [.command])
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.regularMaterial)
+            }
+        }
+        .navigationSplitViewStyle(.balanced)
+        .onAppear {
+            columnVisibility = model.isSidebarVisible ? .all : .detailOnly
+        }
+        .onChange(of: model.isSidebarVisible) { _, isVisible in
+            let desired: NavigationSplitViewVisibility = isVisible ? .all : .detailOnly
+            if columnVisibility != desired {
+                columnVisibility = desired
+            }
+        }
+        .onChange(of: columnVisibility) { _, visibility in
+            let isVisible = visibility != .detailOnly
+            if model.isSidebarVisible != isVisible {
+                model.isSidebarVisible = isVisible
             }
         }
         .toolbar {
@@ -524,72 +522,37 @@ struct TOCSidebarView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                if model.tableOfContents.isEmpty {
-                    Text("No headings found")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(model.tableOfContents) { section in
-                        Button {
-                            model.scrollToHeading(anchor: section.anchor)
-                        } label: {
-                            Text(section.title)
-                                .font(.headline)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.plain)
-
+        List {
+            if model.tableOfContents.isEmpty {
+                Text("No headings found")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(model.tableOfContents) { section in
+                    Section {
                         ForEach(section.children) { child in
                             Button {
                                 model.scrollToHeading(anchor: child.anchor)
                             } label: {
                                 Text(child.title)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .foregroundStyle(.secondary)
                             }
                             .buttonStyle(.plain)
-                            .padding(.leading, 12)
                         }
+                    } header: {
+                        Button {
+                            model.scrollToHeading(anchor: section.anchor)
+                        } label: {
+                            Text(section.title)
+                                .font(.headline)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 14)
         }
-        .frame(minWidth: 220, idealWidth: 250, maxWidth: 320, maxHeight: .infinity)
-        .glassSurface(cornerRadius: 16)
-    }
-}
-
-private struct GlassSurfaceModifier: ViewModifier {
-    let cornerRadius: CGFloat
-
-    func body(content: Content) -> some View {
-        content
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.48),
-                                Color.white.opacity(0.18)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.8
-                    )
-            )
-            .shadow(color: .black.opacity(0.10), radius: 14, y: 6)
-    }
-}
-
-private extension View {
-    func glassSurface(cornerRadius: CGFloat) -> some View {
-        modifier(GlassSurfaceModifier(cornerRadius: cornerRadius))
+        .listStyle(.sidebar)
+        .navigationTitle("Contents")
+        .frame(minWidth: 220, idealWidth: 260)
     }
 }
 
