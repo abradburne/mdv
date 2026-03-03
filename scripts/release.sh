@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="mdv"
 BUNDLE_ID="jp.co.xenocode.mdv"
-VERSION="0.2.0"
+VERSION="0.3.0"
 MIN_MACOS="12.0"
 TEAM_ID="HVUXZ635F3"
 SIGN_ID="Developer ID Application: XenoCode Inc (HVUXZ635F3)"

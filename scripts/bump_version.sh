@@ -3,6 +3,11 @@
 # Updates version in all source files, commits, and tags.
 set -euo pipefail
 
+if [ "${1-}" = "" ]; then
+  echo "Usage: $0 <version>  (e.g. 0.2.0)" >&2
+  exit 1
+fi
+
 NEW="$1"
 
 # Validate semver-ish: digits and dots only

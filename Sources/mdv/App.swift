@@ -16,7 +16,7 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
     private let appDisplayName = "mdv"
     private var recentMenu: NSMenu?
     private let githubRepo = "abradburne/mdv"
-    private let appVersion = "0.2.0"
+    private let appVersion = "0.3.0"
 
     static func main() {
         let app = NSApplication.shared
