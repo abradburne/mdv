@@ -446,64 +446,23 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
-    @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            TOCSidebarView(model: model)
-        } detail: {
-            VStack(spacing: 0) {
-                MarkdownWebView(
-                    html: model.html,
-                    htmlFileURL: model.htmlFileURL,
-                    readAccessURL: model.baseURL,
-                    tocScrollRequest: model.tocScrollRequest
-                )
+        if #available(macOS 13.0, *) {
+            modernSplitView
+        } else {
+            legacySplitView
+        }
+    }
 
+    private var legacySplitView: some View {
+        HStack(spacing: 0) {
+            if model.isSidebarVisible {
+                TOCSidebarView(model: model)
+                    .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
                 Divider()
-
-                HStack(spacing: 16) {
-                    Text(model.statusText)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-
-                    Spacer()
-
-                    Toggle("Live Reload", isOn: $model.liveReloadEnabled)
-                        .toggleStyle(.switch)
-
-                    Picker("Style", selection: $model.selectedPreset) {
-                        ForEach(CssPreset.allCases) { preset in
-                            Text(preset.title).tag(preset)
-                        }
-                    }
-                    .pickerStyle(.menu)
-
-                    Button("Reload") {
-                        model.reload()
-                    }
-                    .keyboardShortcut("r", modifiers: [.command])
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.regularMaterial)
             }
-        }
-        .navigationSplitViewStyle(.balanced)
-        .onAppear {
-            columnVisibility = model.isSidebarVisible ? .all : .detailOnly
-        }
-        .onChange(of: model.isSidebarVisible) { _, isVisible in
-            let desired: NavigationSplitViewVisibility = isVisible ? .all : .detailOnly
-            if columnVisibility != desired {
-                columnVisibility = desired
-            }
-        }
-        .onChange(of: columnVisibility) { _, visibility in
-            let isVisible = visibility != .detailOnly
-            if model.isSidebarVisible != isVisible {
-                model.isSidebarVisible = isVisible
-            }
+            detailPane
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
@@ -514,6 +473,72 @@ struct ContentView: View {
                 }
                 .help(model.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
             }
+        }
+    }
+
+    @available(macOS 13.0, *)
+    private var modernSplitView: some View {
+        NavigationSplitView(
+            columnVisibility: Binding(
+                get: { model.isSidebarVisible ? .all : .detailOnly },
+                set: { visibility in
+                    model.isSidebarVisible = visibility != .detailOnly
+                }
+            )
+        ) {
+            TOCSidebarView(model: model)
+        } detail: {
+            detailPane
+        }
+        .navigationSplitViewStyle(.balanced)
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    model.isSidebarVisible.toggle()
+                } label: {
+                    Image(systemName: "sidebar.left")
+                }
+                .help(model.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+            }
+        }
+    }
+
+    private var detailPane: some View {
+        VStack(spacing: 0) {
+            MarkdownWebView(
+                html: model.html,
+                htmlFileURL: model.htmlFileURL,
+                readAccessURL: model.baseURL,
+                tocScrollRequest: model.tocScrollRequest
+            )
+
+            Divider()
+
+            HStack(spacing: 16) {
+                Text(model.statusText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer()
+
+                Toggle("Live Reload", isOn: $model.liveReloadEnabled)
+                    .toggleStyle(.switch)
+
+                Picker("Style", selection: $model.selectedPreset) {
+                    ForEach(CssPreset.allCases) { preset in
+                        Text(preset.title).tag(preset)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Button("Reload") {
+                    model.reload()
+                }
+                .keyboardShortcut("r", modifiers: [.command])
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.regularMaterial)
         }
     }
 }
