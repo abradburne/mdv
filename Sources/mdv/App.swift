@@ -1205,7 +1205,8 @@ final class SettingsModel: ObservableObject {
         let appBundlePath = Bundle.main.bundleURL.path
         let script = """
         #!/bin/sh
-        exec open -a "\(appBundlePath)" "$@"
+        nohup open -g -a "\(appBundlePath)" "$@" >/dev/null 2>&1 &
+        exit 0
         """
 
         do {
