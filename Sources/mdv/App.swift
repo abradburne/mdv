@@ -153,6 +153,42 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)
 
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(
+            withTitle: "Undo",
+            action: Selector(("undo:")),
+            keyEquivalent: "z"
+        )
+        editMenu.addItem(
+            withTitle: "Redo",
+            action: Selector(("redo:")),
+            keyEquivalent: "Z"
+        )
+        editMenu.addItem(.separator())
+        editMenu.addItem(
+            withTitle: "Cut",
+            action: #selector(NSText.cut(_:)),
+            keyEquivalent: "x"
+        )
+        editMenu.addItem(
+            withTitle: "Copy",
+            action: #selector(NSText.copy(_:)),
+            keyEquivalent: "c"
+        )
+        editMenu.addItem(
+            withTitle: "Paste",
+            action: #selector(NSText.paste(_:)),
+            keyEquivalent: "v"
+        )
+        editMenu.addItem(
+            withTitle: "Select All",
+            action: #selector(NSText.selectAll(_:)),
+            keyEquivalent: "a"
+        )
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
         let viewMenuItem = NSMenuItem()
         let viewMenu = NSMenu(title: "View")
         let toggleSidebarItem = NSMenuItem(
@@ -1198,47 +1234,102 @@ final class SettingsModel: ObservableObject {
     @Published var cliInstallStatus: String = ""
 
     func installCLIHelper() {
+        cliInstallStatus = "Installing CLI helper…"
+        let appBundlePath = Bundle.main.bundleURL.path
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let status = Self.installCLIHelperStatus(appBundlePath: appBundlePath)
+            DispatchQueue.main.async {
+                self?.cliInstallStatus = status
+            }
+        }
+    }
+
+    private static func installCLIHelperStatus(appBundlePath: String) -> String {
         let fileManager = FileManager.default
         let home = fileManager.homeDirectoryForCurrentUser
-        let localBin = URL(fileURLWithPath: "/usr/local/bin", isDirectory: true)
-        let userBin = home.appendingPathComponent("bin", isDirectory: true)
-        let appBundlePath = Bundle.main.bundleURL.path
         let script = """
         #!/bin/sh
         nohup open -g -a "\(appBundlePath)" "$@" >/dev/null 2>&1 &
         exit 0
         """
+        let installDirs: [URL] = [
+            URL(fileURLWithPath: "/opt/homebrew/bin", isDirectory: true),
+            URL(fileURLWithPath: "/usr/local/bin", isDirectory: true),
+            home.appendingPathComponent("bin", isDirectory: true)
+        ]
 
-        do {
-            try fileManager.createDirectory(at: localBin, withIntermediateDirectories: true)
-            let scriptURL = localBin.appendingPathComponent("mdv")
-            try script.write(to: scriptURL, atomically: true, encoding: .utf8)
-            chmod(scriptURL.path, 0o755)
-            cliInstallStatus = "Installed to /usr/local/bin/mdv."
-        } catch {
+        var installedAt: URL?
+        var failures: [String] = []
+
+        for dir in installDirs {
             do {
-                try fileManager.createDirectory(at: userBin, withIntermediateDirectories: true)
-                let scriptURL = userBin.appendingPathComponent("mdv")
+                try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+                let scriptURL = dir.appendingPathComponent("mdv")
                 try script.write(to: scriptURL, atomically: true, encoding: .utf8)
                 chmod(scriptURL.path, 0o755)
-
-                let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
-                if !path.split(separator: ":").contains(Substring(userBin.path)) {
-                    cliInstallStatus = "Installed to ~/bin/mdv. Add ~/bin to your PATH."
-                } else {
-                    cliInstallStatus = "Installed to ~/bin/mdv."
-                }
+                installedAt = scriptURL
+                break
             } catch {
-                cliInstallStatus = "Install failed: \(error.localizedDescription)"
+                failures.append("\(dir.path): \(error.localizedDescription)")
             }
+        }
+
+        guard let installedAt else {
+            let details = failures.isEmpty ? "unknown error" : failures.joined(separator: " | ")
+            return "Install failed. Could not write helper. \(details)"
+        }
+
+        let zshPath = commandPathFromShell(
+            executable: "/bin/zsh",
+            args: ["-lic", "command -v mdv 2>/dev/null || true"]
+        )
+        let bashPath = commandPathFromShell(
+            executable: "/bin/bash",
+            args: ["-lc", "command -v mdv 2>/dev/null || true"]
+        )
+        let verified = [("zsh", zshPath), ("bash", bashPath)]
+            .compactMap { shell, path in path?.isEmpty == false ? "\(shell): \(path!)" : nil }
+
+        if !verified.isEmpty {
+            return "Installed to \(prettyPath(installedAt.path)). Visible in \(verified.joined(separator: ", "))."
+        }
+
+        let parent = installedAt.deletingLastPathComponent().path
+        return """
+        Installed to \(prettyPath(installedAt.path)), but new shells can't find `mdv` yet.
+        Add this to ~/.zprofile, then open a new terminal:
+        export PATH="\(parent):$PATH"
+        """
+    }
+
+    private static func commandPathFromShell(executable: String, args: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = args
+
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return nil }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            let path = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            return path.isEmpty ? nil : path
+        } catch {
+            return nil
         }
     }
 
-    private func resolvedExecutablePath() -> String {
-        if let execURL = Bundle.main.executableURL {
-            return execURL.path
+    private static func prettyPath(_ absolutePath: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if absolutePath.hasPrefix(home + "/") {
+            return "~/" + absolutePath.dropFirst(home.count + 1)
         }
-        return "/usr/bin/env mdv"
+        return absolutePath
     }
 }
 
