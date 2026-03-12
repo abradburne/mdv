@@ -24,4 +24,4 @@ Output
 
 Notes
 - Bundle ID: `jp.co.xenocode.mdv`
-- Version: `0.3.0`
+- Version: `0.3.1`
