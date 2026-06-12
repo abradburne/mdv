@@ -28,7 +28,11 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMainMenu()
-        let args = CommandLine.arguments.dropFirst()
+        var args = CommandLine.arguments.dropFirst()
+        if args.contains("--settings") {
+            args.removeAll { $0 == "--settings" }
+            showSettingsWindow()
+        }
         if args.isEmpty {
             DispatchQueue.main.async {
                 if self.windows.isEmpty {
@@ -116,6 +120,24 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
             withTitle: "Settings…",
             action: #selector(openSettings(_:)),
             keyEquivalent: ","
+        )
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            withTitle: "Hide \(appDisplayName)",
+            action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h"
+        )
+        let hideOthersItem = NSMenuItem(
+            title: "Hide Others",
+            action: #selector(NSApplication.hideOtherApplications(_:)),
+            keyEquivalent: "h"
+        )
+        hideOthersItem.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthersItem)
+        appMenu.addItem(
+            withTitle: "Show All",
+            action: #selector(NSApplication.unhideAllApplications(_:)),
+            keyEquivalent: ""
         )
         appMenu.addItem(.separator())
         appMenu.addItem(
@@ -319,13 +341,17 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 260),
-            styleMask: [.titled, .closable],
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 400),
+            styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.center()
         window.title = "Settings"
+        window.titlebarAppearsTransparent = true
+        // Keep a strong reference without letting close() release the window
+        // out from under us — reopening would crash on a dangling pointer.
+        window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: SettingsView(model: settingsModel))
         window.makeKeyAndOrderFront(nil)
         self.settingsWindow = window
@@ -722,31 +748,168 @@ private extension View {
     }
 }
 
+enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
+    case appearance
+    case commandLine
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .appearance: return "Appearance"
+        case .commandLine: return "Command Line"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .appearance: return "paintbrush.fill"
+        case .commandLine: return "terminal.fill"
+        }
+    }
+
+    var iconColor: Color {
+        switch self {
+        case .appearance: return .blue
+        case .commandLine: return .indigo
+        }
+    }
+}
+
 struct SettingsView: View {
+    @ObservedObject var model: SettingsModel
+    @State private var selection: SettingsSection? = .appearance
+
+    private var current: SettingsSection { selection ?? .appearance }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            List(SettingsSection.allCases, selection: $selection) { section in
+                SettingsSidebarRow(section: section)
+                    .tag(section)
+            }
+            .listStyle(.sidebar)
+            .frame(width: 190)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text(current.title)
+                    .font(.title2.weight(.semibold))
+                    .padding(.horizontal, 20)
+                    .padding(.top, 18)
+                    .padding(.bottom, 4)
+
+                Group {
+                    switch current {
+                    case .appearance:
+                        AppearanceSettingsPane(model: model)
+                    case .commandLine:
+                        CommandLineSettingsPane(model: model)
+                    }
+                }
+                .groupedFormStyle()
+
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color(nsColor: .windowBackgroundColor))
+        }
+        .frame(width: 680, height: 400)
+    }
+}
+
+private struct SettingsSidebarRow: View {
+    let section: SettingsSection
+
+    var body: some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(section.iconColor)
+                .frame(width: 24, height: 24)
+                .overlay(
+                    Image(systemName: section.icon)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white)
+                )
+            Text(section.title)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+struct AppearanceSettingsPane: View {
     @ObservedObject var model: SettingsModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("CLI Helper")
-                .font(.title2)
+        Form {
+            Section {
+                Picker("Default style", selection: $model.defaultPreset) {
+                    ForEach(CssPreset.allCases) { preset in
+                        Text(preset.title).tag(preset)
+                    }
+                }
 
-            Text("Install a small command-line helper so you can run `mdv file.md` from Terminal.")
-                .foregroundStyle(.secondary)
-
-            Button("Install CLI Helper") {
-                model.installCLIHelper()
-            }
-
-            if !model.cliInstallStatus.isEmpty {
-                Text(model.cliInstallStatus)
-                    .font(.callout)
+                HStack {
+                    Text("Font size")
+                    Spacer()
+                    Slider(value: $model.fontSize, in: 12...24, step: 1)
+                        .frame(width: 180)
+                    Text("\(Int(model.fontSize)) px")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 42, alignment: .trailing)
+                }
+            } footer: {
+                Text("Changes apply to all open windows immediately.")
                     .foregroundStyle(.secondary)
             }
-
-            Spacer()
         }
-        .padding(20)
-        .frame(minWidth: 520, minHeight: 260)
+    }
+}
+
+struct CommandLineSettingsPane: View {
+    @ObservedObject var model: SettingsModel
+
+    var body: some View {
+        Form {
+            Section {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Terminal command")
+                        Text("Install a helper so you can run `mdv file.md` from Terminal.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Button("Install…") {
+                        model.installCLIHelper()
+                    }
+                }
+            } footer: {
+                if !model.cliInstallStatus.isEmpty {
+                    Text(model.cliInstallStatus)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
+private extension View {
+    // Grouped form (System Settings look) needs macOS 13; older systems
+    // fall back to the default form layout.
+    @ViewBuilder
+    func groupedFormStyle() -> some View {
+        if #available(macOS 13.0, *) {
+            formStyle(.grouped)
+        } else {
+            self
+        }
     }
 }
 
@@ -936,9 +1099,14 @@ final class AppModel: ObservableObject {
     var documentURL: URL?
     private var watcher: FileWatcher?
     private let renderer = MarkdownRenderer()
-    private static let presetKey = "markdownViewerPreset"
+    static let presetKey = "markdownViewerPreset"
+    static let fontSizeKey = "markdownViewerFontSize"
+    nonisolated static let defaultFontSize: Double = 16
     private static let sidebarVisibleKey = "markdownViewerSidebarVisible"
     private var tempHTMLURL: URL?
+    // nonisolated(unsafe): only written once in init, read in deinit;
+    // NotificationCenter.removeObserver is thread-safe.
+    private nonisolated(unsafe) var appearanceObserver: NSObjectProtocol?
     var onDocumentOpened: ((URL) -> Void)?
 
     init() {
@@ -947,6 +1115,31 @@ final class AppModel: ObservableObject {
             selectedPreset = preset
         }
         isSidebarVisible = UserDefaults.standard.bool(forKey: Self.sidebarVisibleKey)
+        appearanceObserver = NotificationCenter.default.addObserver(
+            forName: .mdvAppearanceChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.appearanceSettingsChanged()
+            }
+        }
+    }
+
+    deinit {
+        if let appearanceObserver {
+            NotificationCenter.default.removeObserver(appearanceObserver)
+        }
+    }
+
+    private func appearanceSettingsChanged() {
+        if let raw = UserDefaults.standard.string(forKey: Self.presetKey),
+           let preset = CssPreset(rawValue: raw),
+           preset != selectedPreset {
+            selectedPreset = preset // didSet re-renders
+        } else {
+            reload()
+        }
     }
 
     func open(path: String) {
@@ -1076,11 +1269,24 @@ final class AppModel: ObservableObject {
     }
 
     private func loadCss() -> String {
-        guard let url = Bundle.module.url(forResource: selectedPreset.resourceName, withExtension: "css"),
-              let css = try? String(contentsOf: url, encoding: .utf8) else {
-            return Self.fallbackCss
+        let base: String
+        if let url = Bundle.module.url(forResource: selectedPreset.resourceName, withExtension: "css"),
+           let css = try? String(contentsOf: url, encoding: .utf8) {
+            base = css
+        } else {
+            base = Self.fallbackCss
         }
-        return css
+        let size = Self.effectiveFontSize(stored: UserDefaults.standard.double(forKey: Self.fontSizeKey))
+        return base + "\n" + Self.fontSizeCss(size)
+    }
+
+    // Presets size text in rem, so scaling the root font-size scales everything.
+    nonisolated static func fontSizeCss(_ size: Double) -> String {
+        "html { font-size: \(Int(size))px; }"
+    }
+
+    nonisolated static func effectiveFontSize(stored: Double) -> Double {
+        stored > 0 ? stored : defaultFontSize
     }
 
     private static let placeholderHTML = """
@@ -1229,13 +1435,53 @@ struct TOCScrollRequest: Equatable {
     let anchor: String
 }
 
+extension Notification.Name {
+    static let mdvAppearanceChanged = Notification.Name("mdvAppearanceChanged")
+}
+
 @MainActor
 final class SettingsModel: ObservableObject {
     @Published var cliInstallStatus: String = ""
+    @Published var defaultPreset: CssPreset {
+        didSet {
+            guard defaultPreset != oldValue else { return }
+            UserDefaults.standard.set(defaultPreset.rawValue, forKey: AppModel.presetKey)
+            NotificationCenter.default.post(name: .mdvAppearanceChanged, object: nil)
+        }
+    }
+    @Published var fontSize: Double {
+        didSet {
+            guard fontSize != oldValue else { return }
+            UserDefaults.standard.set(fontSize, forKey: AppModel.fontSizeKey)
+            NotificationCenter.default.post(name: .mdvAppearanceChanged, object: nil)
+        }
+    }
+
+    init() {
+        if let raw = UserDefaults.standard.string(forKey: AppModel.presetKey),
+           let preset = CssPreset(rawValue: raw) {
+            defaultPreset = preset
+        } else {
+            defaultPreset = .classic
+        }
+        fontSize = AppModel.effectiveFontSize(
+            stored: UserDefaults.standard.double(forKey: AppModel.fontSizeKey)
+        )
+    }
 
     func installCLIHelper() {
+        // Bundle.main.bundleURL only points at the .app when launched from one;
+        // a `swift run` dev build resolves to .build/…/debug, which `open -a` rejects.
+        guard let appBundleURL = Self.resolvedAppBundleURL(
+            bundleURL: Bundle.main.bundleURL,
+            workspaceLookup: { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
+        ) else {
+            cliInstallStatus = "Install failed. Couldn't locate mdv.app — run this from the installed app."
+            return
+        }
+
         cliInstallStatus = "Installing CLI helper…"
-        let appBundlePath = Bundle.main.bundleURL.path
+        let appBundlePath = appBundleURL.path
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let status = Self.installCLIHelperStatus(appBundlePath: appBundlePath)
@@ -1245,14 +1491,26 @@ final class SettingsModel: ObservableObject {
         }
     }
 
-    private static func installCLIHelperStatus(appBundlePath: String) -> String {
+    nonisolated static func resolvedAppBundleURL(bundleURL: URL, workspaceLookup: (String) -> URL?) -> URL? {
+        if bundleURL.pathExtension == "app" {
+            return bundleURL
+        }
+        return workspaceLookup("jp.co.xenocode.mdv")
+    }
+
+    nonisolated static func cliScript(appPath: String) -> String {
+        """
+        #!/bin/sh
+        exec open -a "\(appPath)" "$@"
+        """
+    }
+
+    // Runs on a background queue — must not inherit the class's @MainActor
+    // isolation or Swift 6's runtime check traps (_dispatch_assert_queue_fail).
+    private nonisolated static func installCLIHelperStatus(appBundlePath: String) -> String {
         let fileManager = FileManager.default
         let home = fileManager.homeDirectoryForCurrentUser
-        let script = """
-        #!/bin/sh
-        nohup open -g -a "\(appBundlePath)" "$@" >/dev/null 2>&1 &
-        exit 0
-        """
+        let script = cliScript(appPath: appBundlePath)
         let installDirs: [URL] = [
             URL(fileURLWithPath: "/opt/homebrew/bin", isDirectory: true),
             URL(fileURLWithPath: "/usr/local/bin", isDirectory: true),
@@ -1303,7 +1561,7 @@ final class SettingsModel: ObservableObject {
         """
     }
 
-    private static func commandPathFromShell(executable: String, args: [String]) -> String? {
+    private nonisolated static func commandPathFromShell(executable: String, args: [String]) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = args
@@ -1324,7 +1582,7 @@ final class SettingsModel: ObservableObject {
         }
     }
 
-    private static func prettyPath(_ absolutePath: String) -> String {
+    private nonisolated static func prettyPath(_ absolutePath: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         if absolutePath.hasPrefix(home + "/") {
             return "~/" + absolutePath.dropFirst(home.count + 1)
