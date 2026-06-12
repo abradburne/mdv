@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>mdv — a super-simple Markdown viewer for macOS</title>
+  <meta name="description" content="mdv is a tiny, native macOS app that renders Markdown beautifully. Live reload, three reading styles, a table-of-contents sidebar, and a one-line CLI." />
+  <meta property="og:title" content="mdv — Markdown, beautifully read." />
+  <meta property="og:description" content="A super-simple, native Markdown viewer for macOS." />
+  <meta property="og:image" content="https://abradburne.github.io/mdv/screenshot.png" />
+  <link rel="icon" type="image/png" href="icon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300..600;1,6..72,300..600&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --paper: #f8f6f1;
+      --ink: #182220;
+      --ink-soft: rgba(24, 34, 32, 0.62);
+      --ink-faint: rgba(24, 34, 32, 0.38);
+      --hairline: rgba(24, 34, 32, 0.10);
+      --teal: #2f6e66;
+      --indigo: #4d57a6;
+      --cream: #f0e3c0;
+      --serif: "Newsreader", "Iowan Old Style", Palatino, Georgia, serif;
+      --sans: "Instrument Sans", -apple-system, "Helvetica Neue", sans-serif;
+      --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--sans);
+      background: var(--paper);
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* ---- atmosphere ---- */
+    .glow {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .glow::before {
+      content: "";
+      position: absolute;
+      top: -340px;
+      left: 50%;
+      width: 1100px;
+      height: 780px;
+      transform: translateX(-50%);
+      background:
+        radial-gradient(closest-side at 32% 38%, rgba(240, 227, 192, 0.85), transparent 70%),
+        radial-gradient(closest-side at 68% 30%, rgba(47, 110, 102, 0.30), transparent 70%),
+        radial-gradient(closest-side at 55% 72%, rgba(77, 87, 166, 0.22), transparent 72%);
+      filter: blur(40px);
+      animation: drift 16s ease-in-out infinite alternate;
+    }
+    @keyframes drift {
+      from { transform: translateX(-53%) rotate(-2deg); }
+      to   { transform: translateX(-47%) rotate(2deg); }
+    }
+
+    .grain {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 50;
+      opacity: 0.30;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 240 240' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    }
+
+    .wrap {
+      position: relative;
+      z-index: 1;
+      max-width: 1060px;
+      margin: 0 auto;
+      padding: 0 28px;
+    }
+
+    /* ---- nav ---- */
+    nav {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      padding: 30px 4px 0;
+    }
+    .wordmark {
+      font-family: var(--serif);
+      font-style: italic;
+      font-weight: 500;
+      font-size: 26px;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+      text-decoration: none;
+    }
+    .wordmark span { color: var(--teal); }
+    nav .links { display: flex; gap: 28px; }
+    nav .links a {
+      font-size: 14.5px;
+      font-weight: 500;
+      color: var(--ink-soft);
+      text-decoration: none;
+      transition: color 0.18s ease;
+    }
+    nav .links a:hover { color: var(--ink); }
+
+    /* ---- hero ---- */
+    header { text-align: center; padding: 84px 0 0; }
+
+    .app-icon {
+      width: 108px;
+      height: 108px;
+      border-radius: 24px;
+      box-shadow:
+        0 2px 6px rgba(24, 34, 32, 0.18),
+        0 18px 44px -12px rgba(24, 34, 32, 0.35),
+        inset 0 0 0 0.5px rgba(255, 255, 255, 0.5);
+      margin-bottom: 34px;
+    }
+
+    h1 {
+      font-family: var(--serif);
+      font-size: clamp(46px, 7.2vw, 78px);
+      font-weight: 400;
+      line-height: 1.04;
+      letter-spacing: -0.022em;
+      max-width: 14ch;
+      margin: 0 auto;
+    }
+    h1 em {
+      font-style: italic;
+      font-weight: 400;
+      background: linear-gradient(110deg, var(--teal) 15%, var(--indigo) 85%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      padding-right: 0.06em;
+    }
+
+    .sub {
+      font-size: 19px;
+      line-height: 1.6;
+      color: var(--ink-soft);
+      max-width: 47ch;
+      margin: 26px auto 0;
+    }
+    .sub code {
+      font-family: var(--mono);
+      font-size: 0.86em;
+      background: rgba(24, 34, 32, 0.06);
+      border: 1px solid var(--hairline);
+      border-radius: 5px;
+      padding: 1px 6px;
+      white-space: nowrap;
+    }
+
+    .cta { margin-top: 40px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 16.5px;
+      font-weight: 600;
+      color: var(--paper);
+      background: var(--ink);
+      text-decoration: none;
+      padding: 15px 30px;
+      border-radius: 999px;
+      box-shadow: 0 14px 30px -12px rgba(24, 34, 32, 0.55);
+      transition: transform 0.18s ease, box-shadow 0.18s ease;
+    }
+    .button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 20px 38px -12px rgba(24, 34, 32, 0.55);
+    }
+    .button svg { width: 17px; height: 17px; }
+    .meta {
+      font-size: 13.5px;
+      color: var(--ink-faint);
+      letter-spacing: 0.01em;
+    }
+    .meta a { color: inherit; }
+
+    /* ---- screenshot ---- */
+    .stage { position: relative; margin: 76px auto 0; max-width: 880px; }
+    .stage::before {
+      content: "";
+      position: absolute;
+      inset: 6% -6% -4% -6%;
+      background:
+        radial-gradient(closest-side at 28% 60%, rgba(47, 110, 102, 0.28), transparent 72%),
+        radial-gradient(closest-side at 72% 45%, rgba(77, 87, 166, 0.24), transparent 72%);
+      filter: blur(36px);
+      z-index: 0;
+    }
+    /* The screenshot is a native macOS capture with its own window chrome,
+       rounded corners, and baked-in shadow — no frame needed. */
+    .window { position: relative; z-index: 1; }
+    .window img { display: block; width: 100%; height: auto; }
+
+    /* ---- features ---- */
+    section.features { padding: 120px 0 30px; }
+    .kicker {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--teal);
+      text-align: center;
+    }
+    h2 {
+      font-family: var(--serif);
+      font-size: clamp(32px, 4.4vw, 46px);
+      font-weight: 400;
+      letter-spacing: -0.015em;
+      text-align: center;
+      margin-top: 14px;
+    }
+
+    .grid {
+      margin-top: 64px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-top: 1px solid var(--hairline);
+      border-left: 1px solid var(--hairline);
+    }
+    .cell {
+      border-right: 1px solid var(--hairline);
+      border-bottom: 1px solid var(--hairline);
+      padding: 34px 30px 38px;
+      transition: background 0.25s ease;
+    }
+    .cell:hover { background: rgba(255, 255, 255, 0.55); }
+    .cell .glyph {
+      font-family: var(--serif);
+      font-style: italic;
+      font-size: 30px;
+      line-height: 1;
+      color: var(--teal);
+      display: block;
+    }
+    .cell:nth-child(even) .glyph { color: var(--indigo); }
+    .cell h3 {
+      font-size: 16.5px;
+      font-weight: 600;
+      margin: 18px 0 8px;
+      letter-spacing: -0.01em;
+    }
+    .cell p {
+      font-size: 14.5px;
+      line-height: 1.62;
+      color: var(--ink-soft);
+    }
+    .cell code {
+      font-family: var(--mono);
+      font-size: 0.88em;
+      background: rgba(24, 34, 32, 0.06);
+      border-radius: 4px;
+      padding: 1px 5px;
+    }
+
+    /* ---- closing ---- */
+    .closing { text-align: center; padding: 110px 0 40px; }
+    .closing p {
+      font-family: var(--serif);
+      font-style: italic;
+      font-size: clamp(24px, 3.4vw, 34px);
+      color: var(--ink);
+      max-width: 24ch;
+      margin: 0 auto 34px;
+      line-height: 1.3;
+    }
+
+    footer {
+      border-top: 1px solid var(--hairline);
+      margin-top: 90px;
+      padding: 30px 4px 44px;
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-size: 13.5px;
+      color: var(--ink-faint);
+    }
+    footer a { color: var(--ink-soft); text-decoration: none; }
+    footer a:hover { color: var(--ink); }
+
+    /* ---- load animation ---- */
+    .rise {
+      opacity: 0;
+      transform: translateY(18px);
+      animation: rise 0.9s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    }
+    @keyframes rise { to { opacity: 1; transform: none; } }
+    .d1 { animation-delay: 0.05s; }
+    .d2 { animation-delay: 0.16s; }
+    .d3 { animation-delay: 0.27s; }
+    .d4 { animation-delay: 0.38s; }
+    .d5 { animation-delay: 0.52s; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .rise { animation: none; opacity: 1; transform: none; }
+      .glow::before { animation: none; }
+    }
+
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: 1fr; }
+      header { padding-top: 60px; }
+      nav .links { gap: 18px; }
+      footer { flex-direction: column; gap: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="glow"></div>
+  <div class="grain"></div>
+
+  <div class="wrap">
+    <nav class="rise d1">
+      <a class="wordmark" href="#">md<span>v</span></a>
+      <div class="links">
+        <a href="#features">Features</a>
+        <a href="https://github.com/abradburne/mdv">GitHub</a>
+      </div>
+    </nav>
+
+    <header>
+      <img class="app-icon rise d1" src="icon.png" alt="mdv app icon" width="108" height="108" />
+      <h1 class="rise d2">Markdown, <em>beautifully</em> read.</h1>
+      <p class="sub rise d3">
+        mdv is a tiny, native macOS app that does one thing well: it renders
+        your Markdown the moment you save it. No tabs, no toolbars, no accounts
+        — just your words, set in type worth reading.
+      </p>
+      <div class="cta rise d4">
+        <a class="button" href="https://github.com/abradburne/mdv/releases/latest/download/mdv.dmg">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3v12" /><path d="m6 11 6 6 6-6" /><path d="M5 21h14" />
+          </svg>
+          Download for macOS
+        </a>
+        <span class="meta">v0.4.0 · macOS 12 or later · Free &amp; <a href="https://github.com/abradburne/mdv">open source</a></span>
+      </div>
+    </header>
+
+    <div class="stage rise d5">
+      <div class="window">
+        <img src="screenshot.png" alt="mdv rendering a Markdown document with a table-of-contents sidebar" />
+      </div>
+    </div>
+
+    <section class="features" id="features">
+      <div class="kicker">Quietly capable</div>
+      <h2>Everything you need. Nothing you don&rsquo;t.</h2>
+
+      <div class="grid">
+        <div class="cell">
+          <span class="glyph">¶</span>
+          <h3>Live reload</h3>
+          <p>Save in your editor, see it rendered instantly. mdv watches the file and refreshes the moment it changes.</p>
+        </div>
+        <div class="cell">
+          <span class="glyph">Aa</span>
+          <h3>Three reading styles</h3>
+          <p>Classic serif, clean Modern, or bare Minimal — with adjustable type size, applied live to every window.</p>
+        </div>
+        <div class="cell">
+          <span class="glyph">§</span>
+          <h3>Contents sidebar</h3>
+          <p>Long document? Every heading lands in a sidebar. One click scrolls you smoothly to the right section.</p>
+        </div>
+        <div class="cell">
+          <span class="glyph">&gt;_</span>
+          <h3>One-line CLI</h3>
+          <p>Install the helper once and <code>mdv notes.md</code> opens any file from Terminal, window front and center.</p>
+        </div>
+        <div class="cell">
+          <span class="glyph">⌘</span>
+          <h3>Properly Mac</h3>
+          <p>Native SwiftUI and AppKit. Drag &amp; drop, Open Recent, dark mode, real menus — it behaves like it belongs.</p>
+        </div>
+        <div class="cell">
+          <span class="glyph">∞</span>
+          <h3>Free &amp; open source</h3>
+          <p>Signed, notarized, and MIT-spirited. Read the code, file an issue, or build it yourself with one command.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="closing">
+      <p>&ldquo;Open a file. Read it in style. That&rsquo;s it.&rdquo;</p>
+      <a class="button" href="https://github.com/abradburne/mdv/releases/latest/download/mdv.dmg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3v12" /><path d="m6 11 6 6 6-6" /><path d="M5 21h14" />
+        </svg>
+        Download mdv
+      </a>
+    </section>
+
+    <footer>
+      <span>© 2026 Alan Bradburne · XenoCode Inc</span>
+      <span><a href="https://github.com/abradburne/mdv">GitHub</a> · <a href="https://github.com/abradburne/mdv/releases">Releases</a></span>
+    </footer>
+  </div>
+</body>
+</html>
