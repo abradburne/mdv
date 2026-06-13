@@ -16,7 +16,7 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
     private let appDisplayName = "mdv"
     private var recentMenu: NSMenu?
     private let githubRepo = "abradburne/mdv"
-    private let appVersion = "0.4.0"
+    private let appVersion = "0.5.0"
 
     static func main() {
         let app = NSApplication.shared
@@ -172,6 +172,12 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
             action: #selector(NSWindow.performClose(_:)),
             keyEquivalent: "w"
         )
+        fileMenu.addItem(.separator())
+        fileMenu.addItem(
+            withTitle: "Print…",
+            action: #selector(printDocument(_:)),
+            keyEquivalent: "p"
+        )
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)
 
@@ -207,6 +213,22 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
             withTitle: "Select All",
             action: #selector(NSText.selectAll(_:)),
             keyEquivalent: "a"
+        )
+        editMenu.addItem(.separator())
+        editMenu.addItem(
+            withTitle: "Find…",
+            action: #selector(findInDocument(_:)),
+            keyEquivalent: "f"
+        )
+        editMenu.addItem(
+            withTitle: "Find Next",
+            action: #selector(findNext(_:)),
+            keyEquivalent: "g"
+        )
+        editMenu.addItem(
+            withTitle: "Find Previous",
+            action: #selector(findPrevious(_:)),
+            keyEquivalent: "G"
         )
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
@@ -302,6 +324,50 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
         findWebView(in: NSApplication.shared.keyWindow?.contentView)
     }
 
+    private func keyWindowModel() -> AppModel? {
+        guard let keyWindow = NSApplication.shared.keyWindow else { return nil }
+        return windowModels[ObjectIdentifier(keyWindow)]
+    }
+
+    @objc
+    @MainActor
+    private func findInDocument(_ sender: Any?) {
+        keyWindowModel()?.showFindBar()
+    }
+
+    @objc
+    @MainActor
+    private func findNext(_ sender: Any?) {
+        keyWindowModel()?.findNext()
+    }
+
+    @objc
+    @MainActor
+    private func findPrevious(_ sender: Any?) {
+        keyWindowModel()?.findPrevious()
+    }
+
+    @objc
+    @MainActor
+    private func printDocument(_ sender: Any?) {
+        guard let window = NSApplication.shared.keyWindow,
+              let webView = findWebView(in: window.contentView) else { return }
+
+        let printInfo = NSPrintInfo.shared
+        printInfo.horizontalPagination = .fit
+        printInfo.verticalPagination = .automatic
+        printInfo.isHorizontallyCentered = true
+        printInfo.isVerticallyCentered = false
+
+        let operation = webView.printOperation(with: printInfo)
+        operation.showsPrintPanel = true
+        operation.showsProgressPanel = true
+        // WebKit's print view starts zero-sized and prints blank pages
+        // unless it's given a real frame up front.
+        operation.view?.frame = NSRect(origin: .zero, size: printInfo.paperSize)
+        operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+    }
+
     @objc
     @MainActor
     private func toggleSidebar(_ sender: Any?) {
@@ -375,8 +441,8 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
         window.delegate = self
         windows.append(window)
         windowModels[ObjectIdentifier(window)] = model
-        model.onDocumentOpened = { [weak window] url in
-            window?.title = url.lastPathComponent
+        model.onDocumentOpened = { [weak window, weak model] url in
+            window?.title = model?.documentTitle ?? url.lastPathComponent
             window?.representedURL = url
         }
         return window
@@ -396,17 +462,16 @@ final class AppMain: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDe
            let targetModel = windowModels[ObjectIdentifier(targetWindow)],
            !targetModel.hasDocument {
             targetModel.open(url: standardized)
-            targetWindow.title = standardized.lastPathComponent
+            targetWindow.title = targetModel.documentTitle ?? standardized.lastPathComponent
             targetWindow.representedURL = standardized
             NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
             return
         }
 
+        // Window first so onDocumentOpened is wired before open() fires it.
         let model = AppModel()
+        _ = createWindow(model: model)
         model.open(url: standardized)
-        let window = createWindow(model: model)
-        window.title = standardized.lastPathComponent
-        window.representedURL = standardized
         NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
     }
 
@@ -589,12 +654,19 @@ struct ContentView: View {
 
     private var detailPane: some View {
         VStack(spacing: 0) {
+            if model.isFindBarVisible {
+                FindBarView(model: model)
+                Divider()
+            }
+
             MarkdownWebView(
                 html: model.html,
                 htmlFileURL: model.htmlFileURL,
                 readAccessURL: model.baseURL,
                 tocScrollRequest: model.tocScrollRequest,
-                onFileDrop: openDropped(url:)
+                findRequest: model.findRequest,
+                onFileDrop: openDropped(url:),
+                onFindResult: { found in model.findNotFound = !found }
             )
 
             Divider()
@@ -667,7 +739,7 @@ struct ContentView: View {
         Task { @MainActor in
             model.open(url: standardized)
             if let window = NSApplication.shared.keyWindow ?? NSApplication.shared.mainWindow {
-                window.title = standardized.lastPathComponent
+                window.title = model.documentTitle ?? standardized.lastPathComponent
                 window.representedURL = standardized
             }
             NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
@@ -677,6 +749,57 @@ struct ContentView: View {
     private func isMarkdownFile(url: URL) -> Bool {
         let ext = url.pathExtension.lowercased()
         return ["md", "markdown", "mdown", "mkd", "mkdn"].contains(ext)
+    }
+}
+
+struct FindBarView: View {
+    @ObservedObject var model: AppModel
+    @FocusState private var isFieldFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("Find in document", text: $model.findQuery)
+                .textFieldStyle(.plain)
+                .focused($isFieldFocused)
+                .onSubmit { model.findNext() }
+
+            if model.findNotFound && !model.findQuery.isEmpty {
+                Text("Not found")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button {
+                model.findPrevious()
+            } label: {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(.borderless)
+            .help("Find Previous")
+
+            Button {
+                model.findNext()
+            } label: {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(.borderless)
+            .help("Find Next")
+
+            Button("Done") {
+                model.closeFindBar()
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .onAppear { isFieldFocused = true }
+        .onChange(of: model.findActivation) { _ in isFieldFocused = true }
+        .onChange(of: model.findQuery) { _ in model.findQueryChanged() }
+        .onExitCommand { model.closeFindBar() }
     }
 }
 
@@ -917,6 +1040,7 @@ private extension View {
 final class LinkRoutingDelegate: NSObject, WKNavigationDelegate {
     private var pendingScrollAnchor: String?
     private var lastScrollRequestID: UUID?
+    private var lastFindRequestID: UUID?
     private var lastLoadedHTML: String?
     private var lastLoadedFileURL: URL?
 
@@ -937,6 +1061,19 @@ final class LinkRoutingDelegate: NSObject, WKNavigationDelegate {
         guard let scrollRequest, scrollRequest.id != lastScrollRequestID else { return }
         lastScrollRequestID = scrollRequest.id
         scrollToAnchor(scrollRequest.anchor, in: webView)
+    }
+
+    func handle(findRequest: FindRequest?, in webView: WKWebView, onResult: @escaping @MainActor (Bool) -> Void) {
+        guard let findRequest, findRequest.id != lastFindRequestID else { return }
+        lastFindRequestID = findRequest.id
+
+        let configuration = WKFindConfiguration()
+        configuration.backwards = findRequest.backwards
+        configuration.caseSensitive = false
+        configuration.wraps = true
+        webView.find(findRequest.query, configuration: configuration) { result in
+            onResult(result.matchFound)
+        }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -988,7 +1125,9 @@ struct MarkdownWebView: NSViewRepresentable {
     let htmlFileURL: URL?
     let readAccessURL: URL?
     let tocScrollRequest: TOCScrollRequest?
+    let findRequest: FindRequest?
     let onFileDrop: (URL) -> Void
+    let onFindResult: @MainActor (Bool) -> Void
 
     func makeNSView(context: Context) -> DropAwareWebView {
         let config = WKWebViewConfiguration()
@@ -1011,6 +1150,7 @@ struct MarkdownWebView: NSViewRepresentable {
             readAccessURL: readAccessURL
         )
         context.coordinator.handle(scrollRequest: tocScrollRequest, in: nsView)
+        context.coordinator.handle(findRequest: findRequest, in: nsView, onResult: onFindResult)
     }
 
     func makeCoordinator() -> LinkRoutingDelegate {
@@ -1094,7 +1234,13 @@ final class AppModel: ObservableObject {
     }
     @Published var tableOfContents: [TOCSection] = []
     @Published var tocScrollRequest: TOCScrollRequest?
+    @Published var isFindBarVisible: Bool = false
+    @Published var findQuery: String = ""
+    @Published var findRequest: FindRequest?
+    @Published var findNotFound: Bool = false
+    @Published var findActivation = UUID()
 
+    private(set) var documentTitle: String?
     private(set) var baseURL: URL?
     var documentURL: URL?
     private var watcher: FileWatcher?
@@ -1174,18 +1320,100 @@ final class AppModel: ObservableObject {
 
     private func load(url: URL) {
         do {
-            let markdown = try String(contentsOf: url, encoding: .utf8)
+            let raw = try String(contentsOf: url, encoding: .utf8)
+            let document = Self.stripFrontmatter(from: raw)
+            documentTitle = document.title
             let css = loadCss()
-            self.html = renderer.render(markdown: markdown, css: css, baseURL: baseURL)
+            self.html = renderer.render(markdown: document.markdown, css: css, baseURL: baseURL)
             self.htmlFileURL = writeHTMLToTemp(self.html)
-            self.tableOfContents = Self.extractTableOfContents(from: markdown)
+            self.tableOfContents = Self.extractTableOfContents(from: document.markdown)
             self.statusText = url.lastPathComponent
         } catch {
             html = renderer.wrap(body: "<p>Failed to load markdown.</p>", css: loadCss(), baseURL: baseURL)
             htmlFileURL = nil
+            documentTitle = nil
             tableOfContents = []
             statusText = "Error: \(error.localizedDescription)"
         }
+    }
+
+    // YAML frontmatter is machine metadata — readers shouldn't see it rendered
+    // as a literal `---` block. Only strip when the block actually looks like
+    // YAML; a `---` thematic break followed by prose must stay untouched.
+    nonisolated static func stripFrontmatter(from markdown: String) -> (markdown: String, title: String?) {
+        let lines = markdown.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
+        guard lines.count > 1,
+              lines[0].trimmingCharacters(in: .whitespacesAndNewlines) == "---" else {
+            return (markdown, nil)
+        }
+
+        var closeIndex: Int?
+        for index in 1..<lines.count {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed == "---" || trimmed == "..." {
+                closeIndex = index
+                break
+            }
+        }
+        guard let closeIndex else { return (markdown, nil) }
+
+        let block = lines[1..<closeIndex]
+        var title: String?
+        for line in block {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            let isIndented = line.hasPrefix(" ") || line.hasPrefix("\t")
+            if isIndented || trimmed.hasPrefix("- ") || trimmed == "-" { continue }
+            // Top-level lines must be `key:` pairs, or the block isn't YAML.
+            guard let colon = trimmed.firstIndex(of: ":"),
+                  Self.isYamlKey(trimmed[trimmed.startIndex..<colon]) else {
+                return (markdown, nil)
+            }
+            if title == nil, trimmed[trimmed.startIndex..<colon].lowercased() == "title" {
+                var value = trimmed[trimmed.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                if value.count >= 2,
+                   (value.hasPrefix("\"") && value.hasSuffix("\"")) || (value.hasPrefix("'") && value.hasSuffix("'")) {
+                    value = String(value.dropFirst().dropLast())
+                }
+                title = value.isEmpty ? nil : value
+            }
+        }
+
+        let body = lines[(closeIndex + 1)...].joined(separator: "\n")
+        return (body, title)
+    }
+
+    private nonisolated static func isYamlKey(_ key: Substring) -> Bool {
+        !key.isEmpty && key.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" || $0 == "." || $0 == " " }
+    }
+
+    func showFindBar() {
+        isFindBarVisible = true
+        findActivation = UUID()
+    }
+
+    func closeFindBar() {
+        isFindBarVisible = false
+        findNotFound = false
+    }
+
+    func findNext() {
+        submitFind(backwards: false)
+    }
+
+    func findPrevious() {
+        submitFind(backwards: true)
+    }
+
+    func findQueryChanged() {
+        findNotFound = false
+        guard !findQuery.isEmpty else { return }
+        submitFind(backwards: false)
+    }
+
+    private func submitFind(backwards: Bool) {
+        guard !findQuery.isEmpty else { return }
+        findRequest = FindRequest(query: findQuery, backwards: backwards)
     }
 
     func scrollToHeading(anchor: String) {
@@ -1433,6 +1661,12 @@ struct TOCChild: Identifiable, Equatable {
 struct TOCScrollRequest: Equatable {
     let id = UUID()
     let anchor: String
+}
+
+struct FindRequest: Equatable {
+    let id = UUID()
+    let query: String
+    let backwards: Bool
 }
 
 extension Notification.Name {
